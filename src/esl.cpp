@@ -14,8 +14,8 @@
 //   file        ::= (toplevel)*
 //   toplevel    ::= declaration | def
 //   declaration ::= IDENT "=" ("uniform" | "varying" | "attribute") glsl_type   e.g.  n = attribute point
-//   def         ::= "def" ("vertex" | "geometry" | "fragment") "()" ":"          e.g.  def vertex():
-//   body        ::= (INDENTED_LINE)+                                              e.g. 4-space indent
+//   def         ::= "def" ("vertex" | "geometry" | "fragment") "():"           e.g.  def vertex():
+//   body        ::= (INDENTED_LINE)+                                             e.g. 4-space indent
 //
 // Comments start with "#" and run to end of line. No semicolons required in
 // statements — the transpiler auto-appends ";" to body lines that don't already
@@ -54,13 +54,14 @@ void rtrim(std::string& s) {
 
 void trim(std::string& s) {
     size_t a = 0;
-    while (a < s.size() && (s[a] == ' ' || s[a] == '\t' || s[a] == '\r' || s[a] == '\n')) a++;
+    while (a < s.size() && (s[a] == ' ' || s[a] == '\t' || s[a] == '\r' || s[a] == '\n')) ++a;
     rtrim(s);
     // After rtrim the string may have shrunk past our leading whitespace count
     // (e.g. input was all whitespace -> now empty). substr(a) on a shrunk-from
     // shorter string throws std::out_of_range, so collapse to empty instead.
+    // Use erase(0, a) instead of s = s.substr(a) to avoid an allocation.
     if (a >= s.size()) { s.clear(); return; }
-    if (a > 0) s = s.substr(a);
+    if (a > 0) s.erase(0, a);
 }
 
 int countIndent(const std::string& line) {
@@ -82,93 +83,15 @@ bool isIdentifier(const std::string& s) {
     return true;
 }
 
+// Truncate s in-place at the first '#'. Using resize avoids the substring
+// allocation that the previous s.substr(0, p) version incurred on every
+// comment-stripped line.
 void stripComment(std::string& s) {
-    auto p = s.find('#');
-    if (p != std::string::npos) s = s.substr(0, p);
-}
-
-void replaceAll(std::string& s, const std::string& from, const std::string& to) {
-    size_t pos = 0;
-    while ((pos = s.find(from, pos)) != std::string::npos) {
-        s.replace(pos, from.size(), to);
-        pos += to.size();
-    }
-}
-
-// (Word-boundary substitution is implemented inline by the helpers below
-// for their respective call shapes — no shared helper.)
-
-// In vert/geom/frag bodies, when the user writes `name(...)`, optionally
-// rewrite the call to `replacement(...)`. Only fires when name is a complete
-// identifier immediately followed by `(`.
-void replaceCall(std::string& s, const std::string& name, const std::string& replacement) {
-    const std::string needle = name + "(";
-    size_t pos = 0;
-    while (true) {
-        size_t found = s.find(needle, pos);
-        if (found == std::string::npos) break;
-        bool precededByIdent =
-            found > 0 && (std::isalnum((unsigned char)s[found - 1]) || s[found - 1] == '_');
-        if (precededByIdent) {
-            pos = found + needle.size();
-            continue;
+    for (size_t i = 0; i < s.size(); ++i) {
+        if (s[i] == '#') {
+            s.resize(i);
+            return;
         }
-        s.replace(found, needle.size(), replacement + "(");
-        pos = found + replacement.size() + 1;
-    }
-}
-
-// Replace `output =` (with word-boundary on the LHS identifier) by `replacement`,
-// so user can write a friendlier output statement instead of gl_Position = …
-void replaceOutputAssign(std::string& s, const std::string& replacement) {
-    const std::string needle = "output";
-    size_t pos = 0;
-    while (true) {
-        size_t found = s.find(needle, pos);
-        if (found == std::string::npos) break;
-        bool precededByIdent =
-            found > 0 && (std::isalnum((unsigned char)s[found - 1]) || s[found - 1] == '_');
-        if (precededByIdent) { pos = found + needle.size(); continue; }
-        // Require `=` (with optional whitespace) immediately after `output`.
-        size_t o = found + needle.size();
-        while (o < s.size() && (s[o] == ' ' || s[o] == '\t')) ++o;
-        if (o >= s.size() || s[o] != '=') { pos = found + needle.size(); continue; }
-        s.replace(found, needle.size(), replacement);
-        pos = found + replacement.size();
-    }
-}
-
-// Expand `transform(point)` to `projection * view * model * vec4(point, 1.0)`.
-// Paren-balance from the substituted open paren to find the matching close
-// paren of the new vec4(...) and insert `, 1.0` before it.
-void expandTransform(std::string& s) {
-    const std::string needle    = "transform";
-    const std::string expansion = "projection * view * model * vec4";
-    size_t pos = 0;
-    while (true) {
-        size_t found = s.find(needle, pos);
-        if (found == std::string::npos) break;
-        bool precededByIdent =
-            found > 0 && (std::isalnum((unsigned char)s[found - 1]) || s[found - 1] == '_');
-        if (precededByIdent) { pos = found + needle.size(); continue; }
-        // Require `(` (optionally preceded by whitespace) after `transform`.
-        size_t o = found + needle.size();
-        while (o < s.size() && (s[o] == ' ' || s[o] == '\t')) ++o;
-        if (o >= s.size() || s[o] != '(') { pos = found + needle.size(); continue; }
-        s.replace(found, needle.size(), expansion);
-        size_t scan = found + expansion.size();
-        // scan starts on the `(` of the new vec4(...) call (== original `(` of transform(...)).
-        int depth = 1;
-        size_t closePos = scan + 1;
-        while (closePos < s.size() && depth > 0) {
-            if (s[closePos] == '(') ++depth;
-            else if (s[closePos] == ')') --depth;
-            if (depth == 0) break;
-            ++closePos;
-        }
-        if (depth != 0) break; // unterminated — abandon further expansion
-        s.insert(closePos, ", 1.0");
-        pos = closePos + std::string(", 1.0").size();
     }
 }
 
@@ -268,10 +191,160 @@ bool parseDef(const std::string& content, bool& isVertex, bool& isGeom, bool& is
     if (content.rfind(p, 0) != 0) return false;
     std::string rest = content.substr(p.size());
     trim(rest);
-    if (rest == "vertex():")   { isVertex   = true; return true; }
+    if (rest == "vertex():" )  { isVertex   = true; return true; }
     if (rest == "geometry():") { isGeom     = true; return true; }
     if (rest == "fragment():") { isFragment = true; return true; }
     return false;
+}
+
+// Stages used by both the parse loop and the per-line transform.
+enum Stage { DECLS, VERTEX, GEOMETRY, FRAGMENT };
+
+// ---- Single-pass body-line transform ----------------------------------
+//
+// Original implementation ran 3 (or 4 for fragment) find-and-replace passes
+// per body line, each re-scanning the line and re-allocating scratch
+// strings. This implementation:
+//   1. Does a fast-path skip when none of the substitution tokens is even
+//      present (most arithmetic body lines — `passColor = color`,
+//      `vec3 n = a_n;`, etc. — go through the fast path).
+//   2. Otherwise walks the line once, applying all substitutions inline,
+//      tracking paren depth so `transform(...)` correctly inserts `, 1.0`
+//      before its matching `)` (works through nested `sample(...)` and
+//      even nested `transform(...)`).
+//
+// All word-boundary semantics match the original implementation:
+//   * `output`    — preceded by non-ident char; followed (after optional
+//                   whitespace) by `=`.
+//   * `sample(`   — preceded by non-ident char; immediately followed by
+//                   `(` (no whitespace allowed, matching the original
+//                   `replaceCall` which searched for `"sample("`).
+//   * `transform` — preceded by non-ident char; followed (after optional
+//                   whitespace) by `(`.
+//   * `gl_FragColor` (fragment only) — no word-boundary check, matching
+//                   the original literal `replaceAll`.
+//
+// Result: appended to `outBody` followed by a single '\n'. The trailing
+// auto-`;` injection is preserved.
+void processBodyLine(const std::string& line, Stage stage, std::string& outBody) {
+    // Fast-path: cheap O(n) substring pre-checks. If none of the trigger
+    // tokens appears in the line, we know no substitution can fire — emit
+    // the line verbatim with the auto-semicolon.
+    bool couldHave =
+        line.find("output")    != std::string::npos
+     || line.find("sample(")   != std::string::npos
+     || (stage == VERTEX   && line.find("transform")    != std::string::npos)
+     || (stage == FRAGMENT && line.find("gl_FragColor") != std::string::npos);
+
+    if (!couldHave) {
+        char last = line.empty() ? '\0' : line.back();
+        outBody += line;
+        if (last != ';' && last != '{' && last != '}') outBody += ';';
+        outBody += '\n';
+        return;
+    }
+
+    // Slow path: walk the line once and apply every substitution inline.
+    std::string out;
+    out.reserve(line.size() + 64);
+
+    const char* outName = (stage == FRAGMENT) ? "fragColor" : "gl_Position";
+
+    int parenDepth = 0;
+    // Stack of parenDepths at which a `transform(` was opened. When a
+    // closing `)` brings us back to one of these depths, we insert ", 1.0"
+    // BEFORE emitting the `)`. Almost always zero or one entry.
+    std::vector<int> transformDepths;
+    transformDepths.reserve(2);
+
+    const size_t len = line.size();
+    size_t i = 0;
+    while (i < len) {
+        // gl_FragColor  ->  fragColor  (fragment only) — UNCONDITIONAL
+        // literal substitution, matching the original replaceAll behavior.
+        // Sits ABOVE the wordStart gate so identifiers containing
+        // `gl_FragColor` as a substring are still rewritten.
+        if (stage == FRAGMENT && i + 12 <= len && line.compare(i, 12, "gl_FragColor") == 0) {
+            out.append("fragColor", 9);
+            i += 12;
+            continue;
+        }
+
+        bool wordStart = (i == 0) || !isIdentChar(line[i - 1], false);
+
+        if (wordStart) {
+            // output = X  ->  outName = X
+            if (i + 6 <= len && line.compare(i, 6, "output") == 0) {
+                size_t o = i + 6;
+                while (o < len && (line[o] == ' ' || line[o] == '\t')) ++o;
+                if (o < len && line[o] == '=') {
+                    out.append(outName);
+                    i += 6;  // fall-back into normal streaming for ws and '='
+                    continue;
+                }
+            }
+            // sample(  ->  texture(
+            if (i + 7 <= len && line.compare(i, 7, "sample(") == 0) {
+                out.append("texture(", 8);
+                i += 7;
+                ++parenDepth;  // synthetic paren balance
+                continue;
+            }
+            // transform(  ->  projection * view * model * vec4(  (vertex only)
+            if (stage == VERTEX && i + 9 <= len && line.compare(i, 9, "transform") == 0) {
+                size_t o = i + 9;
+                while (o < len && (line[o] == ' ' || line[o] == '\t')) ++o;
+                if (o < len && line[o] == '(') {
+                    out.append("projection * view * model * vec4(");
+                    i = o + 1;  // skip past the original `(`
+                    ++parenDepth;
+                    transformDepths.push_back(parenDepth);
+                    continue;
+                }
+            }
+        }
+
+        char c = line[i];
+        if (c == '(') {
+            ++parenDepth;
+        } else if (c == ')') {
+            // Insert ", 1.0" before the `)` that closes a transform(...)-born
+            // vec4(...). If the line was unterminated (we hit end-of-string
+            // before matching), the stack is left non-empty but no insert
+            // happens — matching the original behavior.
+            if (!transformDepths.empty() && transformDepths.back() == parenDepth) {
+                out.append(", 1.0", 5);
+                transformDepths.pop_back();
+            }
+            --parenDepth;
+        }
+        out.push_back(c);
+        ++i;
+    }
+
+    char last = out.empty() ? '\0' : out.back();
+    if (last != ';' && last != '{' && last != '}') out += ';';
+    outBody += out;
+    outBody += '\n';
+}
+
+// ---- Result builder ----------------------------------------------------
+//
+// Original used std::ostringstream with ~40 `<<` ops per shader — each
+// goes through locale-independent facet machinery. Direct string append
+// is cheaper and lets us reserve exactly the size we know we'll need.
+
+static void appendDeclStructDecls(std::string& out,
+                                   const std::vector<Decl>& decls,
+                                   const char* keyword) {
+    out.append(keyword);
+    for (const auto& d : decls) {
+        out.append(" ");
+        out.append(d.type);
+        out.append(" ");
+        out.append(d.name);
+        out.append(";\n");
+    }
 }
 
 Result buildGlsl(const std::vector<Decl>& uniforms,
@@ -280,78 +353,126 @@ Result buildGlsl(const std::vector<Decl>& uniforms,
                  const std::string& vertBody,
                  const std::string& geomBody,
                  const std::string& fragBody) {
-    std::ostringstream vert, geom, frag;
+    std::string vert, geom, frag;
+
+    // Per-line preamble size estimates so the output buffer reservation
+    // covers the actual growth even when many uniforms/varyings/attributes
+    // are declared. Without this the reserved capacity is dominated by
+    // the body size only, and the preamble loops trigger several reallocs.
+    constexpr size_t kUniformLine    = 32;   // "uniform TYPE NAME;\n"
+    constexpr size_t kVaryingOut     = 28;   // "out TYPE NAME;\n"  (vert)
+    constexpr size_t kVaryingInOut   = 64;   // both lines for geom
+    constexpr size_t kVaryingIn      = 28;   // "in TYPE NAME;\n"  (frag)
+    constexpr size_t kAttrLayout     = 56;   // "layout(...) in TYPE a_NAME;\n"
+    constexpr size_t kAttrAlias      = 40;   // "    TYPE NAME = a_NAME;\n"
+    constexpr size_t kVertPreamble   = 256;
+    constexpr size_t kGeomPreamble   = 256;
+    constexpr size_t kFragPreamble   = 128;
 
     // ---- Vertex ----
-    vert << "#version 330 core\n";
-    vert << "// Generated by CrazyEngine ESL transpiler\n\n";
-    vert << "layout(location = 0) in vec3 a_position;\n";
-    vert << "layout(location = 1) in vec3 a_color;\n";
-    vert << "layout(location = 2) in vec2 a_uv;\n";
-    vert << "uniform mat4 model;\n";
-    vert << "uniform mat4 view;\n";
-    vert << "uniform mat4 projection;\n";
-    for (auto& u : uniforms)  vert << "uniform " << u.type << " " << u.name << ";\n";
-    for (auto& v : varyings)  vert << "out "    << v.type << " " << v.name << ";\n";
-    for (auto& a : attributes) {
-        vert << "layout(location = " << a.location << ") in " << a.type << " a_" << a.name << ";\n";
+    vert.reserve(vertBody.size()
+                 + uniforms.size()  * kUniformLine
+                 + varyings.size()  * kVaryingOut
+                 + attributes.size() * (kAttrLayout + kAttrAlias)
+                 + kVertPreamble);
+
+    vert.append(
+        "#version 330 core\n"
+        "// Generated by CrazyEngine ESL transpiler\n\n"
+        "layout(location = 0) in vec3 a_position;\n"
+        "layout(location = 1) in vec3 a_color;\n"
+        "layout(location = 2) in vec2 a_uv;\n"
+        "uniform mat4 model;\n"
+        "uniform mat4 view;\n"
+        "uniform mat4 projection;\n");
+    appendDeclStructDecls(vert, uniforms, "uniform");
+    appendDeclStructDecls(vert, varyings, "out");
+
+    for (const auto& a : attributes) {
+        vert.append("layout(location = ");
+        vert.append(std::to_string(a.location));
+        vert.append(") in ");
+        vert.append(a.type);
+        vert.append(" a_");
+        vert.append(a.name);
+        vert.append(";\n");
     }
 
-    vert << "\nvoid main() {\n";
-    vert << "    vec3 position = a_position;\n";
-    vert << "    vec3 color    = a_color;\n";
-    vert << "    vec2 uv       = a_uv;\n";
-    for (auto& a : attributes) {
-        vert << "    " << a.type << " " << a.name << " = a_" << a.name << ";\n";
+    vert.append("\nvoid main() {\n");
+    vert.append("    vec3 position = a_position;\n");
+    vert.append("    vec3 color    = a_color;\n");
+    vert.append("    vec2 uv       = a_uv;\n");
+    for (const auto& a : attributes) {
+        vert.append("    ");
+        vert.append(a.type);
+        vert.append(" ");
+        vert.append(a.name);
+        vert.append(" = a_");
+        vert.append(a.name);
+        vert.append(";\n");
     }
-    vert << vertBody;
-    vert << "}\n";
+    vert.append(vertBody);
+    vert.append("}\n");
 
     // ---- Geometry (optional) ----
     if (!geomBody.empty()) {
-        geom << "#version 330 core\n";
-        geom << "// Generated by CrazyEngine ESL transpiler\n\n";
-        geom << "layout(triangles) in;\n";
-        geom << "layout(triangle_strip, max_vertices = 6) out;\n";
-        geom << "uniform mat4 model;\n";
-        geom << "uniform mat4 view;\n";
-        geom << "uniform mat4 projection;\n";
-        for (auto& u : uniforms) geom << "uniform " << u.type << " " << u.name << ";\n";
-        // Varyings from vertex are received by the geom stage as `in v_NAME[3]`
-        // (the `v_` prefix avoids a collision with the same-name `out NAME`).
-        // Routing the data is the user's responsibility:
-        //   passColor = v_passColor[gi];
-        //   ...
-        //   EmitVertex();
-        for (auto& v : varyings) {
-            geom << "in "  << v.type << " v_" << v.name << "[3];\n";
-            geom << "out " << v.type << " "    << v.name << ";\n";
-        }
+        geom.reserve(geomBody.size()
+                     + uniforms.size()  * kUniformLine
+                     + varyings.size()  * kVaryingInOut
+                     + kGeomPreamble);
 
-        geom << "\nvoid main() {\n";
-        geom << "    vec3 gpos[3] = vec3[3](\n";
-        geom << "        gl_in[0].gl_Position.xyz,\n";
-        geom << "        gl_in[1].gl_Position.xyz,\n";
-        geom << "        gl_in[2].gl_Position.xyz\n";
-        geom << "    );\n";
-        geom << "    int gi = 0;\n";
-        geom << geomBody;
-        geom << "}\n";
+        geom.append(
+            "#version 330 core\n"
+            "// Generated by CrazyEngine ESL transpiler\n\n"
+            "layout(triangles) in;\n"
+            "layout(triangle_strip, max_vertices = 6) out;\n"
+            "uniform mat4 model;\n"
+            "uniform mat4 view;\n"
+            "uniform mat4 projection;\n");
+        appendDeclStructDecls(geom, uniforms, "uniform");
+        for (const auto& v : varyings) {
+            geom.append("in ");
+            geom.append(v.type);
+            geom.append(" v_");
+            geom.append(v.name);
+            geom.append("[3];\n");
+            geom.append("out ");
+            geom.append(v.type);
+            geom.append(" ");
+            geom.append(v.name);
+            geom.append(";\n");
+        }
+        geom.append(
+            "\nvoid main() {\n"
+            "    vec3 gpos[3] = vec3[3](\n"
+            "        gl_in[0].gl_Position.xyz,\n"
+            "        gl_in[1].gl_Position.xyz,\n"
+            "        gl_in[2].gl_Position.xyz\n"
+            "    );\n"
+            "    int gi = 0;\n");
+        geom.append(geomBody);
+        geom.append("}\n");
     }
 
     // ---- Fragment ----
-    frag << "#version 330 core\n";
-    frag << "// Generated by CrazyEngine ESL transpiler\n\n";
-    frag << "precision mediump float;\n";
-    frag << "out vec4 fragColor;\n";
-    for (auto& v : varyings) frag << "in "     << v.type << " " << v.name << ";\n";
-    for (auto& u : uniforms) frag << "uniform " << u.type << " " << u.name << ";\n";
+    frag.reserve(fragBody.size()
+                 + uniforms.size() * kUniformLine
+                 + varyings.size() * kVaryingIn
+                 + kFragPreamble);
 
-    frag << "\nvoid main() {\n";
-    frag << fragBody;
-    frag << "}\n";
+    frag.append(
+        "#version 330 core\n"
+        "// Generated by CrazyEngine ESL transpiler\n\n"
+        "precision mediump float;\n"
+        "out vec4 fragColor;\n");
+    for (const auto& v : varyings)  frag.append("in ")     .append(v.type).append(" ").append(v.name).append(";\n");
+    appendDeclStructDecls(frag, uniforms, "uniform");
 
-    return { vert.str(), frag.str(), geom.str(), true, "" };
+    frag.append("\nvoid main() {\n");
+    frag.append(fragBody);
+    frag.append("}\n");
+
+    return { vert, frag, geom, true, "" };
 }
 
 constexpr int kMaxAttributes = 3; // bounded by engine extras[3] slots (locations 3, 4, 5)
@@ -359,7 +480,12 @@ constexpr int kMaxAttributes = 3; // bounded by engine extras[3] slots (location
 Result transpileInternal(const std::string& source) {
     std::vector<Decl> uniforms, varyings, attributes;
     std::string vertBody, geomBody, fragBody;
-    enum Stage { DECLS, VERTEX, GEOMETRY, FRAGMENT };
+    // Reserve based on source size — bodies are typically ~2x source length
+    // once uniform/varying decls and formatting chunks are appended.
+    vertBody.reserve(source.size() * 2 + 256);
+    geomBody.reserve(source.size()     + 256);
+    fragBody.reserve(source.size()     + 256);
+
     Stage stage = DECLS;
 
     std::istringstream iss(source);
@@ -423,29 +549,11 @@ Result transpileInternal(const std::string& source) {
                 case FRAGMENT: target = &fragBody; break;
                 default:       target = nullptr;    break;
             }
-            std::string line = content;
-            // Front-door abstractions: `output = …` substitutes for the
-            // stage-appropriate gl_Position / fragColor write; `sample(...)`
-            // becomes `texture(...)` for sampler lookups; `transform(point)`
-            // expands to `projection * view * model * vec4(point, 1.0)` in
-            // the vertex stage only.
-            switch (stage) {
-                case VERTEX:   replaceOutputAssign(line, "gl_Position"); break;
-                case GEOMETRY: replaceOutputAssign(line, "gl_Position"); break;
-                case FRAGMENT:
-                    replaceAll(line, "gl_FragColor", "fragColor");  // legacy
-                    replaceOutputAssign(line, "fragColor");         // new
-                    break;
-                default: break;
-            }
-            replaceCall(line, "sample", "texture");
-            if (stage == VERTEX) expandTransform(line);
-            // GLSL needs semicolons; Pythonic ESL doesn't use them, so inject
-            // one at the end of every body line that's not already terminated
-            // by ';', '{', or '}' (handles braces for inline if-blocks, etc.).
-            char last = line.empty() ? '\0' : line.back();
-            if (last != ';' && last != '{' && last != '}') line += ';';
-            *target += line + "\n";
+            // All body-line substitutions (output=, sample(, transform(,
+            // gl_FragColor, plus auto-semicolon) are handled by a single
+            // character-by-character pass — much cheaper than the previous
+            // 3-4 separate find+replace scans per line.
+            processBodyLine(content, stage, *target);
         }
     }
 

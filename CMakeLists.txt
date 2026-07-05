@@ -116,3 +116,10 @@ add_test(NAME esl_cookbook_test COMMAND esl_cookbook_test)
 add_executable(physics_test tests/physics_test.cpp)
 target_link_libraries(physics_test PRIVATE CrazyEngine)
 add_test(NAME physics_test COMMAND physics_test)
+
+# ---------------------------------------------------------------
+# ESL transpiler microbenchmark (not a ctest test — manual only)
+# Usage: ./esl_bench [reps] [iters]   e.g. ./esl_bench 4000 11
+# ---------------------------------------------------------------
+add_executable(esl_bench tests/esl_bench.cpp)
+target_link_libraries(esl_bench PRIVATE CrazyEngine)
