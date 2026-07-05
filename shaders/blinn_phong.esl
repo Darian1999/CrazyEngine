@@ -1,0 +1,69 @@
+# Blinn-Phong lighting prefab
+#
+# Standard Phong illumination model with Blinn's half-vector for the specular
+# term. Per-fragment lighting composed of:
+#
+#   ambient  = uAmbient * uLightColor
+#   diffuse  = max(N . L, 0) * uLightColor
+#   specular = pow(max(N . H, 0), uShininess) * uLightColor      (Blinn-Phong)
+#   H        = normalize(L + V)                                  (half-vector)
+#   V        = normalize(uViewPos - passWorldPos)                (view dir)
+#
+# Final fragment color = (ambient + diffuse + specular) * baseColor
+# where baseColor = sample(uTexture, passUV) * passColor.
+#
+# Required uniforms (set them once per draw):
+#   uLightDir   -- direction TO the light, world space (need not be normalized)
+#   uLightColor -- light RGB, world space
+#   uViewPos    -- camera position, world space (update per frame if camera moves)
+#   uAmbient    -- ambient strength, 0..1   (try 0.10 - 0.20)
+#   uShininess  -- specular exponent         (try 16 - 64; higher = tighter)
+#   uTexture    -- base sampler; pass any sampler2D
+#
+# Required attributes (auto-populated by built-in shapes via setAttribute):
+#   n           -- per-vertex normal at location 3 (Vertex::extras[0])
+#
+# Notes:
+# - passWorldNormal uses mat3(model) for the normal transform. That's correct
+#   when the model has uniform scale (true for the demo's built-in shapes).
+#   For non-uniform scale, use the inverse-transpose of mat3(model).
+# - passWorldPos is the model-space position transformed into world space, so
+#   the view direction V is computed in world space (consistent with L).
+
+uTexture        = uniform texture
+uLightDir       = uniform point
+uLightColor     = uniform color
+uViewPos        = uniform point
+uAmbient        = uniform number
+uShininess      = uniform number
+
+passColor       = varying color
+passUV          = varying point2d
+passWorldPos    = varying point
+passWorldNormal = varying point
+n               = attribute point
+
+def vertex():
+    passColor       = color
+    passUV          = uv
+    passWorldPos    = (model * vec4(position, 1.0)).xyz
+    passWorldNormal = mat3(model) * n
+    output          = transform(position)
+
+def fragment():
+    vec3 N = normalize(passWorldNormal)
+    vec3 L = normalize(uLightDir)
+    vec3 V = normalize(uViewPos - passWorldPos)
+    vec3 H = normalize(L + V)
+
+    float diff = max(dot(N, L), 0.0)
+    float spec = pow(max(dot(N, H), 0.0), uShininess)
+
+    vec3 ambient  = uAmbient * uLightColor
+    vec3 diffuse  = diff * uLightColor
+    vec3 specular = spec * uLightColor
+
+    # .rgb swizzle: texture() returns vec4, passColor is vec3, and GLSL
+    # rejects vec4 * vec3 — take only the RGB channels of the sample.
+    vec3 baseColor = sample(uTexture, passUV).rgb * passColor
+    output = vec4((ambient + diffuse + specular) * baseColor, 1.0)

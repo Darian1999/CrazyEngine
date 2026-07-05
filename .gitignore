@@ -1,0 +1,69 @@
+# ============================================================
+# Build artifacts
+# ============================================================
+build/
+out/
+cmake-build-*/
+dist/
+
+# ============================================================
+# CMake-generated files
+# (in case someone runs cmake without a separate build dir)
+# ============================================================
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+CTestTestfile.cmake
+_deps/
+CMakeUserPresets.json
+
+# Compilation database (regenerated on every cmake configure)
+compile_commands.json
+
+# ============================================================
+# Compiled object / archive files
+# ============================================================
+*.o
+*.obj
+*.a
+*.lib
+*.so
+*.so.*
+*.dylib
+*.dll
+*.exe
+*.pdb
+*.idb
+
+# ============================================================
+# Editor / IDE
+# ============================================================
+.vscode/
+.idea/
+.cache/
+*.swp
+*.swo
+*~
+*.sublime-project
+*.sublime-workspace
+*.code-workspace
+.vs/
+
+# ============================================================
+# OS
+# ============================================================
+.DS_Store
+Thumbs.db
+desktop.ini
+ehthumbs.db
+$RECYCLE.BIN/
+
+# ============================================================
+# Misc
+# ============================================================
+*.log
+*.tmp
+*.bak
+*.swatch
+core
+core.*

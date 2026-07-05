@@ -1,0 +1,121 @@
+# Cook-Torrance / GGX physical-based lighting prefab
+#
+# Energy-conserving microfacet BRDF for a single directional light:
+#
+#   f_r = kS * (D * G * F) / (4 (N.V)(N.L)) + kD * baseColor / pi
+#   kS  = F                                                                (specular)
+#   kD  = (1 - F) * (1 - metalness)                                        (diffuse; vanishes for metals)
+#   F0  = mix(vec3(0.04), baseColor, metalness)                            (4% reflectance for dielectrics,
+#                                                                            base color for metals)
+#   D   = a^2 / (pi * ((N.H)^2 * (a^2 - 1) + 1)^2)                         (GGX / Trowbridge-Reitz NDF)
+#   G   = G1(N.V) * G1(N.L)        with
+#         G1(x)  = x / (x * (1 - k) + k),  k = (roughness + 1)^2 / 8       (Schlick-GGX, direct lighting)
+#   F   = F0 + (1 - F0) * (1 - V.H)^5                                     (Schlick Fresnel)
+#
+# where roughness is the PERCEPTUAL roughness in [0, 1] (0 = mirror, 1 = matte),
+# `a = roughness^2` is the squared roughness that GGX expects, and `metalness`
+# in [0, 1] linearly interpolates F0 between 0.04 (dielectric) and baseColor
+# (metal). The cube is energy-conserving: the diffuse term is scaled by the
+# energy NOT consumed by the specular term (`1 - F`), and metals have zero
+# diffuse contribution.
+#
+# Required uniforms (set per draw):
+#   uTexture   -- base sampler; pass any sampler2D
+#   uLightDir  -- direction TO the light, world space (need not be normalized)
+#   uLightColor-- light RGB, world space
+#   uViewPos   -- camera position, world space (update per frame if camera moves)
+#   uRoughness -- perceptual roughness, 0..1   (try 0.1 mirror, 0.4 satin, 0.8 chalky)
+#   uMetalness -- metalness,         0..1   (0 dielectric, 1 metal; 0.5 = half-metal)
+#
+# Required attributes (auto-populated by built-in shapes via setAttribute):
+#   n          -- per-vertex normal at location 3 (Vertex::extras[0])
+#
+# Implementation notes:
+# - uRoughness is clamped to 0.025 below to avoid dividing by zero in the GGX
+#   denominator when both roughness and N.H are tiny.
+# - The base of pow() for Fresnel is clamped to [0, 1] to dodge undefined
+#   behavior on drivers that treat pow(0, 5) as NaN.
+# - The specular denominator has a small epsilon (1e-4) to avoid div-by-zero
+#   when the camera looks exactly opposite the light (N.L == 0). Combined
+#   with the N.L multiplier, the resulting specular contribution is zero
+#   anyway, so this is purely a numerical-stability measure.
+# - No explicit `if` block is used: the math naturally produces zero
+#   contribution for back-facing fragments because N.L is clamped to >= 0
+#   and multiplies the whole lightContrib at the end. (This dodges ESL's
+#   auto-semicolon pitfall: `if (cond):` would gain a stray ';' and break
+#   the GLSL.)
+
+uTexture        = uniform texture
+uLightDir       = uniform point
+uLightColor     = uniform color
+uViewPos        = uniform point
+uRoughness      = uniform number
+uMetalness      = uniform number
+
+passColor       = varying color
+passUV          = varying point2d
+passWorldPos    = varying point
+passWorldNormal = varying point
+n               = attribute point
+
+def vertex():
+    passColor       = color
+    passUV          = uv
+    # World-space position + normal. mat3(model) is the right normal
+    # transform for uniform scale (true for the demo's built-in shapes);
+    # for non-uniform scale, use the inverse-transpose of mat3(model).
+    passWorldPos    = (model * vec4(position, 1.0)).xyz
+    passWorldNormal = mat3(model) * n
+    output          = transform(position)
+
+def fragment():
+    vec3 N = normalize(passWorldNormal)
+    vec3 V = normalize(uViewPos - passWorldPos)
+    vec3 L = normalize(uLightDir)
+    vec3 H = normalize(V + L)
+
+    float NdotL = max(dot(N, L), 0.0)
+    float NdotV = max(dot(N, V), 0.0)
+    float NdotH = max(dot(N, H), 0.0)
+    float VdotH = max(dot(V, H), 0.0)
+
+    # Clamp perceptual roughness to avoid 0/0 in the GGX denominator.
+    float roughness = max(uRoughness, 0.025)
+    float metalness = uMetalness
+    float alpha  = roughness * roughness
+    float alpha2 = alpha * alpha
+
+    # .rgb swizzle: texture() returns vec4, passColor is vec3, and GLSL 330
+    # rejects vec4 * vec3.
+    vec3 baseColor = sample(uTexture, passUV).rgb * passColor
+
+    # F0: 0.04 for dielectrics (4% reflectance), baseColor for metals.
+    vec3 F0 = mix(vec3(0.04), baseColor, metalness)
+    # Schlick Fresnel; clamp the pow() base to dodge driver-specific UB.
+    vec3 F  = F0 + (vec3(1.0) - F0) * pow(clamp(1.0 - VdotH, 0.0, 1.0), 5.0)
+
+    # GGX / Trowbridge-Reitz normal distribution.
+    float denom = NdotH * NdotH * (alpha2 - 1.0) + 1.0
+    float D     = alpha2 / (3.14159 * denom * denom)
+
+    # Schlick-GGX geometry, direct-lighting form of k.
+    float k    = (roughness + 1.0) * (roughness + 1.0) / 8.0
+    float G1_V = NdotV / (NdotV * (1.0 - k) + k)
+    float G1_L = NdotL / (NdotL * (1.0 - k) + k)
+    float G    = G1_V * G1_L
+
+    # Specular BRDF. Epsilon in the denominator is a numerical guard; the
+    # NdotL multiplier further on will zero the contribution when the light
+    # is behind the fragment.
+    vec3 specular = (D * G * F) / (4.0 * NdotV * NdotL + 0.0001)
+
+    # Energy-conserving split: specular weight is F, diffuse weight is
+    # (1 - F) scaled by (1 - metalness) so metals have no diffuse term.
+    vec3 kD = (vec3(1.0) - F) * (1.0 - metalness)
+    vec3 diffuse = kD * baseColor / 3.14159
+
+    # Simple image-based ambient (5% of base color). For full IBL you'd
+    # sample a prefiltered environment map; this is a single-light prefab.
+    vec3 ambient     = baseColor * 0.05
+    vec3 lightContrib = (diffuse + specular) * NdotL * uLightColor
+    output = vec4(ambient + lightContrib, 1.0)

@@ -1,0 +1,36 @@
+# CrazyEngine ESL demo shader (Pythonic-friendly front door)
+#
+# Built-in vertex attributes (no need to declare):
+#   vec3 position    -- location 0    also available as "point"
+#   vec3 color       -- location 1
+#   vec2 uv          -- location 2
+# Built-in uniforms (no need to declare):
+#   mat4 model, mat4 view, mat4 projection
+#
+# Friendly syntax layered over GLSL:
+#   output          -> gl_Position (vert/geom)  /  fragColor (frag)
+#   sample(tex, uv) -> texture(tex, uv)
+#   transform(p)    -> projection * view * model * vec4(p, 1.0)   (vert only)
+# Type aliases: point | color -> vec3, point2d -> vec2,
+#               matrix -> mat4, texture -> sampler2D,
+#               number -> float, integer -> int.
+# Raw GLSL names still work.
+#
+# User-declared custom vertex attributes (locations 3, 4, 5):
+#   n = attribute point      # 'n' is auto-aliased to a_n inside vert main()
+# Bounded at 3 attribute declarations; extras[N] in Vertex are pre-bound at
+# VAO locations 3, 4, 5 as Vec4 slots so OpenGL handles vec2/vec3/float
+# declared shaders without manual remap.
+
+tex       = uniform texture
+passColor = varying color
+passUV    = varying point2d
+n         = attribute point
+
+def vertex():
+    passColor = color
+    passUV    = uv
+    output    = transform(position)
+
+def fragment():
+    output = sample(tex, passUV) * vec4(passColor, 1.0)
