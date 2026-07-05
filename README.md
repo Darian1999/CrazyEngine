@@ -29,6 +29,11 @@ vec4(…)` boilerplate, no semicolons to remember.
   and file-loaded via stb_image (PNG / JPG / BMP / TGA).
 - **Camera + input** — WASD + Space/Shift movement, mouse-look, FPS-style
   cursor lock, scroll-wheel ready.
+- **Bullet physics bindings** — beginner-friendly `crazy::physics::World`,
+  `RigidBody`, and shapes (`BoxShape`, `SphereShape`, `CapsuleShape`,
+  `PlaneShape`, `MeshShape`). Pulled in via CMake `FetchContent` so users
+  don't need a system Bullet install; no Bullet types leak into the public
+  header — everything stays in `crazy::Vec3 / Vec4 / Mat4`.
 - **Doc-driven test** — every Python-fenced code block in the cookbook section
   of `docs/ESL.md` is automatically run through `crazy::esl::transpile` at
   test time, so the docs can never silently drift from a working example.
@@ -74,16 +79,18 @@ The demo renders three objects side by side:
 
 ```
 crazyEngine/
-├── CMakeLists.txt              # build config
+├── CMakeLists.txt              # build config (also fetches Bullet 3.25)
 ├── README.md                   # you are here
 ├── .gitignore
 ├── src/
 │   ├── main.cpp                # demo entry point
 │   ├── engine.cpp              # Engine, Shader, Mesh, Texture, Camera, Input
-│   └── esl.cpp                 # ESL → GLSL transpiler
+│   ├── esl.cpp                 # ESL → GLSL transpiler
+│   └── physics.cpp             # Bullet bindings (only file exposing Bullet types)
 ├── include/crazyengine/
 │   ├── engine.h                # public engine API
-│   └── esl.h                   # public ESL API
+│   ├── esl.h                   # public ESL API
+│   └── physics.h               # public physics API (no Bullet types)
 ├── shaders/
 │   ├── basic.esl               # textured-only prefab
 │   ├── blinn_phong.esl         # classic Phong/Blinn lighting
@@ -91,7 +98,8 @@ crazyEngine/
 ├── docs/
 │   └── ESL.md                  # full ESL language reference
 └── tests/
-    └── esl_cookbook_test.cpp   # runs every docs example through the transpiler
+    ├── esl_cookbook_test.cpp   # runs every docs example through the transpiler
+    └── physics_test.cpp        # headless test for the Bullet bindings
 ```
 
 ## Writing your own shader
@@ -124,6 +132,38 @@ if (!shader.loadFromESL("shaders/my_shader.esl")) {
 shader.use();
 // ... draw calls ...
 ```
+
+## Using the physics bindings
+
+```cpp
+#include <crazyengine/physics.h>
+
+crazy::physics::World world({0.0f, -9.81f, 0.0f});        // gravity
+world.addStaticBody(crazy::physics::PlaneShape({0, 1, 0}, 0.0f));
+
+crazy::physics::BoxShape groundShape({0.5f, 0.5f, 0.5f});
+auto ball = world.addDynamicBody(groundShape, /*mass=*/1.0f, {0, 5, 0});
+
+while (running()) {
+    world.step(deltaTime);
+    // ball.position() returns a crazy::Vec3 you can drive straight into
+    // Mat4::translate(...).
+}
+```
+
+Key types (all in `crazy::physics`):
+
+- `World` — owns the dynamics world; gravity get/set, step / stepFixed,
+  body creation/removal, bodyCount.
+- `RigidBody` — opaque, move-only handle. Has `position()`, `transform()`,
+  `linearVelocity()` / `setLinearVelocity()`, `applyCentralForce()` /
+  `applyCentralImpulse()`, kinematic-aware `setPosition()`, `type()`.
+- `Shape` (abstract) — `BoxShape(SphereShape(CapsuleShape(PlaneShape(MeshShape`.
+  Each is cloned into the World on body add, so originals can go out of
+  scope immediately.
+
+Bullet's own type names (`btRigidBody`, `btVector3`, ...) never appear in
+`include/crazyengine/physics.h` — the cpp does all conversion under the hood.
 
 ## Running the tests
 
